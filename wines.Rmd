@@ -1,0 +1,264 @@
+---
+title: "Quality Prediction of Wines"
+author: "*Kiseong Park; Doctor, Data scientist*"
+date: "*Tuesday, April 16, 2019*"
+output: html_notebook
+---
+
+The purpose of this study is predict the quality of wines.  
+The Data is from [http://archive.ics.uci.edu/ml/datasets/Wine+Quality](http://archive.ics.uci.edu/ml/datasets/Wine+Quality).  
+There are two datasets; 'winequality-red' and 'winquality-white.'  
+I use only 'winequality-white' in this time.  
+But I have a plan for analysis of 'winequality-red' next time.
+
+
+```{r include=FALSE}
+library(ggplot2)
+library(dplyr)
+source("C:/Users/KS-Park/OneDrive/Documents/panel.cor.R")
+source("C:/Users/KS-Park/OneDrive/Documents/rmse.R")
+
+white <- read.csv("E:/AI/projects/wines/winequality-white.csv", sep=';')
+```
+
+```{r}
+glimpse(white)
+```
+The data has 4898 observations and 12 variables.  
+The `quality' is the dependent variable.
+
+<br>
+
+## Check missing values ##
+
+```{r}
+white[!complete.cases(white),]
+summary(white)
+```
+
+There is no missing value.
+
+<br>
+
+## Exploratory Data Analysis ##
+
+```{r}
+pairs(white, upper.panel = panel.cor)
+```
+
+```{r message=FALSE}
+library(gridExtra)
+
+p1 <- white %>% ggplot(aes(quality)) + geom_bar()
+p2 <- white %>% ggplot(aes(factor(quality), alcohol)) + geom_boxplot()
+p3 <- white %>% ggplot(aes(factor(quality), density)) + geom_boxplot()
+p4 <- white %>% ggplot(aes(alcohol, density)) + geom_point(alpha=0.1) + geom_smooth()
+grid.arrange(p1, p2, p3, p4, ncol=2)
+```
+
+`alcohol` and `density` show some correlations with `quality`.
+
+<br>
+
+## Divide into 3 groups: training, validation, and test ##
+
+```{r}
+set.seed(0416)
+n <- nrow(white)
+idx <- 1:n
+training_idx <- sample(idx, n*0.6)
+validation_idx <- setdiff(idx, training_idx)
+test_idx <- sample(validation_idx, n*0.2)
+validation_idx <- setdiff(validation_idx, test_idx)
+training <- white[training_idx,]
+validation <- white[validation_idx,]
+test <- white[test_idx,]
+
+y_obs <- validation$quality
+
+data.frame(nrow(training), nrow(validation), nrow(test))
+```
+
+<br>
+
+## Linear Regression Model ##
+
+```{r}
+white_lm <- lm(quality ~ ., training)
+white_lm %>% summary()
+white_lm %>% plot()
+
+yhat_lm <- predict(white_lm, validation)
+RMSE_lm <- rmse(y_obs, yhat_lm)
+
+df_lm <- data.frame(Method='LM', RMSE = RMSE_lm)
+df_lm
+```
+```{r}
+white_lm2 <- lm(quality ~ .^2, training)
+white_lm2 %>% summary()
+white_lm2 %>% plot()
+
+yhat_lm2 <- predict(white_lm2, validation)
+RMSE_lm2 <- rmse(y_obs, yhat_lm2)
+
+df_lm2 <- data.frame(Method='LM2', RMSE = RMSE_lm2)
+df_lm2
+```
+
+```{r results='hide'}
+library(MASS)
+white_step <- stepAIC(white_lm, scope=list(upper= ~.^2, lower= ~ 1))
+```
+```{r}
+white_step %>% summary()
+length(coef(white_step))
+
+yhat_step <- predict(white_step, validation)
+RMSE_step <- rmse(y_obs, yhat_step)
+
+df_step <- data.frame(Method='Step', RMSE = RMSE_step)
+df_step
+```
+
+<br>
+
+## Lasso Regression Model ##
+
+```{r message=FALSE}
+library(glmnet)
+
+training.x <- model.matrix(quality ~ .-1, training)
+training.y <- training$quality
+white_lasso <- cv.glmnet(training.x, training.y, alpha = 1)
+white_lasso %>% plot()
+coef(white_lasso, s='lambda.min')
+coef(white_lasso, s='lambda.1se')
+
+validation.x <- model.matrix(quality ~ .-1, validation)
+yhat_lasso <- predict(white_lasso, s='lambda.min', newx = validation.x)
+RMSE_Lasso <- rmse(y_obs, yhat_lasso)
+
+df_Lasso <- data.frame(Method='Lasso', RMSE = RMSE_Lasso)
+df_Lasso
+```
+
+<br>
+
+## Ridge Regression Model ##
+
+```{r}
+white_ridge <- cv.glmnet(training.x, training.y, alpha = 0)
+white_ridge %>% plot()
+coef(white_ridge, s='lambda.min')
+coef(white_ridge, s='lambda.1se') 
+
+yhat_ridge <- predict(white_ridge, s='lambda.min', newx = validation.x)
+RMSE_Ridge <- rmse(y_obs, yhat_ridge)
+
+df_Ridge <- data.frame(Method='Ridge', RMSE = RMSE_Ridge)
+df_Ridge
+```
+
+<br>
+
+## Elastic Regression Model ##
+
+```{r}
+white_elastic <- cv.glmnet(training.x, training.y, alpha = .5)
+white_elastic %>% plot()
+coef(white_elastic, s='lambda.min')
+coef(white_elastic, s='lambda.1se')
+
+yhat_elastic <- predict(white_elastic, s='lambda.min', newx = validation.x)
+RMSE_Elastic <- rmse(y_obs, yhat_elastic)
+
+df_Elastic <- data.frame(Method='Elastic', RMSE = RMSE_Elastic)
+df_Elastic
+```
+
+<br>
+
+## Regression Tree Model ##
+
+```{r}
+library(rpart)
+
+white_rt <- rpart(quality ~ ., training)
+white_rt
+white_rt %>% plot(); text(white_rt, use.n = T)
+
+yhat_rt <- predict(white_rt, validation)
+RMSE_RT <- rmse(y_obs, yhat_rt)
+
+df_RT <- data.frame(Method='RT', RMSE = RMSE_RT)
+df_RT
+```
+
+<br>
+
+## RandomForest Model ##
+
+```{r message=FALSE}
+library(randomForest)
+
+set.seed(0416)
+white_rf <- randomForest(quality ~ ., training)
+white_rf
+white_rf %>% plot()
+varImpPlot(white_rf)
+
+yhat_rf <- predict(white_rf, validation)
+RMSE_RF <- rmse(y_obs, yhat_rf)
+
+df_RF <- data.frame(Method='RF', RMSE = RMSE_RF)
+df_RF
+```
+
+<br>
+
+## Gradient Boosting Model ##
+
+```{r message=FALSE}
+library(gbm)
+
+set.seed(0416)
+white_gbm <- gbm(quality ~ ., data=training, n.trees = 1000, cv.folds = 3, verbose = T)
+best_iter <- gbm.perf(white_gbm, method='cv')
+
+yhat_gbm <- predict(white_gbm, n.trees=best_iter, newdata = validation)
+RMSE_GBM <- rmse(y_obs, yhat_gbm)
+
+df_GBM <- data.frame(Method='GBM', RMSE = RMSE_GBM)
+df_GBM
+```
+
+<br>
+
+## Model Selection ##
+
+```{r}
+df_result <- rbind(df_lm, df_lm2, df_step, df_Lasso, df_Ridge, df_Elastic, df_RT, df_RF, df_GBM)
+df_result[order(df_result$RMSE),]
+```
+
+```{r}
+pairs(data.frame(y_obs, yhat_lm, yhat_lm2, yhat_step, yhat_lasso, yhat_ridge, yhat_elastic, yhat_rt, yhat_rf, yhat_gbm), upper.panel = panel.cor)
+```
+
+The estimated values of RandomForest model shows the least squared error.  
+It has the best correlation with observations in validation set.
+
+<br>
+
+## Test ##
+
+```{r}
+y_test <- test$quality
+yhat_test <- predict(white_rf, test)
+rmse(y_test, yhat_test)
+```
+
+
+
+
