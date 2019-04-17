@@ -1,0 +1,275 @@
+---
+title: "Quality Prediction of Red Wines"
+author: "*Kiseong Park; Doctor, Data scientist*"
+date: "*Wednesday, April 17, 2019*"
+output: html_notebook
+---
+
+Today I am going to analyze the ['winequality-red'](http://archive.ics.uci.edu/ml/datasets/Wine+Quality), as I said yesterday.  
+The goal of analysis is same to [Quality Prediction of Wines](https://github.com/elmidion/wines/blob/master/wines.Rmd).  
+It is to predict the quality of red wines.
+
+Let's see the red-wines data.  
+This data is seperated by semicolon. So when I load this data, I used `sep=';'`.
+
+```{r include=FALSE}
+library(ggplot2)
+library(dplyr)
+source("C:/Users/KS-Park/OneDrive/Documents/panel.cor.R")
+source("C:/Users/KS-Park/OneDrive/Documents/rmse.R")
+
+rwines <- read.csv("E:/AI/projects/wines/winequality-red.csv", sep=';')
+```
+```{r}
+glimpse(rwines)
+```
+
+The data has 1599 observations, 11 independant variables and 1 dependant variable.  
+
+```{r message=FALSE}
+summary(rwines)
+pairs(rwines, upper.panel = panel.cor)
+
+library(gridExtra)
+p1 <- ggplot(rwines, aes(quality)) + geom_bar()
+p2 <- ggplot(rwines, aes(factor(quality), alcohol)) + geom_boxplot()
+p3 <- ggplot(rwines, aes(factor(quality), volatile.acidity)) + geom_boxplot()
+p4 <- ggplot(rwines, aes(factor(quality), sulphates)) + geom_boxplot()
+grid.arrange(p1, p2, p3, p4, ncol=2)
+```
+
+`Alcohol` has a strong positive correlation with `quality`, but it doesn't seems to be a linear correlation.  
+`volatile.acidity` has a negative correlation with `quality`.  
+`sulphates` show weak positive correlation with `quality`.
+
+<br>
+
+## Splitting data into training, validation, and test sets ##
+
+```{r}
+set.seed(0417)
+
+n <- nrow(rwines)
+idx <- 1:n
+training_idx <- sample(idx, n*0.6)
+validation_idx <- setdiff(idx, training_idx)
+test_idx <- sample(validation_idx, n*0.2)
+validation_idx <- setdiff(validation_idx, test_idx)
+
+training <- rwines[training_idx,]
+validation <- rwines[validation_idx,]
+test <- rwines[test_idx,]
+
+y_obs <- validation$quality
+
+data.frame(nrow(training), nrow(validation), nrow(test))
+```
+
+To train, validate, and test models, I splitted data into 3 groups: training, validation, and test sets.  
+The training set has 959 observations extracted from data by random sampling.  
+The validation set has other 321 observations.  
+The test set has 319 observations that differ from training and validation sets.
+
+<br>
+
+## Linear Regression Model ##
+
+```{r}
+rw_lm <- lm(quality ~ ., training)
+rw_lm %>% summary()
+rw_lm %>% plot()
+
+yhat_lm <- predict(rw_lm, newdata = validation)
+RMSE_lm <- rmse(y_obs, yhat_lm)
+
+df_LM <- data.frame(Method = 'LM', RMSE = RMSE_lm)
+df_LM
+```
+
+First, I assigned a linear regression model.  
+In 'Residuals vs Fitted values' plot, the means of residuals is not linear.  
+It seems to have quadratic correlation.  
+I am going to assign a quadratic regression model.
+
+```{r}
+rw_lm2 <- lm(quality ~ .^2, training)
+rw_lm2 %>% summary()
+rw_lm2 %>% plot()
+
+yhat_lm2 <- predict(rw_lm2, validation)
+RMSE_lm2 <- rmse(y_obs, yhat_lm2)
+
+df_LM2 <- data.frame(Method = 'LM2', RMSE = RMSE_lm2)
+df_LM2
+```
+
+There are too many features in regression equation.  
+Now I am going to assign stepwise method.
+
+```{r message=FALSE, results='hide'}
+library(MASS)
+
+rw_step <- stepAIC(rw_lm, scope=list(upper = ~.^2, lower = ~ 1))
+```
+```{R}
+rw_step %>% summary()
+rw_step %>% plot()
+
+yhat_step <- predict(rw_step, validation)
+RMSE_step <- rmse(y_obs, yhat_step)
+
+df_Step <- data.frame(Method = 'Step', RMSE = RMSE_step)
+df_Step
+```
+
+<br>
+
+## Lasso Regression Model ##
+
+```{r message=FALSE}
+library(glmnet)
+
+training.x <- model.matrix(quality ~ .-1, training)
+training.y <- training$quality
+rw_lasso <- cv.glmnet(training.x, training.y, alpha = 1.0)
+rw_lasso %>% plot()
+rw_lasso %>% coef(s='lambda.min')
+rw_lasso %>% coef(s='lambda.1se')
+
+validation.x <- model.matrix(quality ~ .-1, validation)
+yhat_lasso <- predict(rw_lasso, s='lambda.min', newx = validation.x)
+RMSE_lasso <- rmse(y_obs, yhat_lasso)
+
+df_Lasso <- data.frame(Method = 'Lasso', RMSE = RMSE_lasso)
+df_Lasso
+```
+
+LASSO(Least Absolute Shrinkage Selector Operator) regression model shows RMSE 0.6613833.  
+The LASSO regression model has 9 features with 'lambda.min'(lambda=0.008274297), and 4 features with 'lambda.1se'(lambda=0.09294717).
+
+<br>
+
+## Ridge Regression Model ##
+
+```{r}
+rw_ridge <- cv.glmnet(training.x, training.y, alpha = 0)
+rw_ridge %>% plot()
+rw_ridge %>% coef(s='lambda.min')
+rw_ridge %>% coef(s='lambda.1se')
+
+yhat_ridge <- predict(rw_ridge, s='lambda.min', newx = validation.x)
+RMSE_ridge <- rmse(y_obs, yhat_ridge)
+
+df_Ridge <- data.frame(Method = 'Ridge', RMSE = RMSE_ridge)
+df_Ridge
+```
+
+Ridge regression model shows RMSE 0.6619621.  
+This model cannot reduce features.
+
+<br>
+
+## Elastic Net Regression Model ##
+
+```{r}
+rw_elastic <- cv.glmnet(training.x, training.y, alpha = 0.5)
+rw_elastic %>% plot()
+rw_elastic %>% coef(s='lambda.min')
+rw_elastic %>% coef(s='lambda.1se')
+
+yhat_elastic <- predict(rw_elastic, s='lambda.min', newx = validation.x)
+RMSE_elastic <- rmse(y_obs, yhat_elastic)
+
+df_Elastic <- data.frame(Method = 'Elastic', RMSE = RMSE_elastic)
+df_Elastic
+```
+
+Elastic Net regression model shows RMSE 0.661536.  
+
+<br>
+
+## Decision Tree Model ##
+
+```{r}
+library(rpart)
+
+rw_dt <- rpart(quality ~ ., training)
+rw_dt
+rw_dt %>% plot(); text(rw_dt, use.n = T)
+
+yhat_dt <- predict(rw_dt, validation)
+RMSE_dt <- rmse(y_obs, yhat_dt)
+
+df_DT <- data.frame(Method = 'DT', RMSE = RMSE_dt)
+df_DT
+```
+
+The decision tree model shows RMSE 0.6965824.
+
+<br>
+
+## RandomForest Model ##
+
+```{r message=FALSE}
+library(randomForest)
+
+set.seed(0417)
+rw_rf <- randomForest(quality ~ ., training)
+rw_rf %>% plot()
+rw_rf %>% varImpPlot()
+
+yhat_rf <- predict(rw_rf, newdata = validation)
+RMSE_rf <- rmse(y_obs, yhat_rf)
+
+df_RF <- data.frame(Method = 'RF', RMSE = RMSE_rf)
+df_RF
+```
+
+The randomforest model shows RMSE 0.5944378.
+
+<br>
+
+## Gradient boosting Model ##
+
+```{r message=FALSE}
+library(gbm)
+
+set.seed(0417)
+rw_gbm <- gbm(quality ~ ., data=training, n.trees = 1000, cv.folds = 3, verbose = T)
+rw_gbm
+best_iter <- gbm.perf(rw_gbm, method='cv')
+
+yhat_gbm <- predict(rw_gbm, n.trees = best_iter, newdata = validation)
+RMSE_gbm <- rmse(y_obs, yhat_gbm)
+
+df_GBM <- data.frame(Method = 'GBM', RMSE = RMSE_gbm)
+df_GBM
+```
+
+The gradient boosting model shows RMSE 0.6339536.
+
+<br>
+
+## Model selection ##
+
+```{r}
+df_result <- rbind(df_LM, df_LM2, df_Step, df_Lasso, df_Ridge, df_Elastic, df_DT, df_RF, df_GBM)
+df_result[order(df_result$RMSE),]
+```
+
+The randomforest model has the least LSE(least squared error) in these models.  
+I suggest the randomforest model to predict the quality of red wines.
+
+```{r}
+pairs(data.frame(y_obs, yhat_lm, yhat_lm2, yhat_step, yhat_lasso, yhat_ridge, yhat_elastic, yhat_dt, yhat_rf, yhat_gbm), upper.panel = panel.cor)
+```
+
+## Model test ##
+
+```{r}
+y_test <- test$quality
+yhat_test <- predict(rw_rf, newdata = test)
+rmse(y_test, yhat_test)
+```
+
+The randomforest model shows RMSE 0.6629703 in test sets.
